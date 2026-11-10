@@ -4,6 +4,7 @@ use std::{
     env,
     fs,
     io,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
@@ -695,16 +696,41 @@ fn prepare_runtime(runtime_dir: &mut Option<PathBuf>) -> Result<PathBuf, String>
     }
     *runtime_dir = None;
     if let Some(exe) = embedded_runtime::EMBEDDED_GOODBYEDPI {
-        let base = env::temp_dir().join("GoodbyeDPI-Control");
+        let dll = embedded_runtime::EMBEDDED_WINDIVERT_DLL
+            .ok_or_else(|| "Thiếu WinDivert.dll trong gói ứng dụng.".to_string())?;
+        let sys = embedded_runtime::EMBEDDED_WINDIVERT_SYS
+            .ok_or_else(|| "Thiếu driver WinDivert64.sys trong gói ứng dụng.".to_string())?;
+        // Each app build gets its own stable folder. Windows keeps a loaded
+        // WinDivert driver file locked, so never overwrite a runtime another
+        // running GoodbyeDPI instance may still be using.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        exe.hash(&mut hasher);
+        dll.hash(&mut hasher);
+        sys.hash(&mut hasher);
+        let fingerprint = hasher.finish();
+        let base = env::temp_dir()
+            .join("GoodbyeDPI-Control")
+            .join(format!("{fingerprint:016x}"));
         fs::create_dir_all(&base).map_err(|err| format!("Không tạo được thư mục runtime: {err}"))?;
-        fs::write(base.join("goodbyedpi.exe"), exe).map_err(|err| format!("Không ghi được engine: {err}"))?;
-        fs::write(base.join("WinDivert.dll"), embedded_runtime::EMBEDDED_WINDIVERT_DLL.unwrap()).map_err(|err| format!("Không ghi được WinDivert.dll: {err}"))?;
-        fs::write(base.join("WinDivert64.sys"), embedded_runtime::EMBEDDED_WINDIVERT_SYS.unwrap()).map_err(|err| format!("Không ghi được driver WinDivert: {err}"))?;
+        write_runtime_file(&base.join("goodbyedpi.exe"), exe, "engine GoodbyeDPI")?;
+        write_runtime_file(&base.join("WinDivert.dll"), dll, "WinDivert.dll")?;
+        write_runtime_file(&base.join("WinDivert64.sys"), sys, "driver WinDivert64.sys")?;
         *runtime_dir = Some(base.clone());
         return Ok(base.join("goodbyedpi.exe"));
     }
     let adjacent = env::current_exe().ok().and_then(|path| path.parent().map(|dir| dir.join("goodbyedpi.exe")));
     adjacent.filter(|path| path.is_file()).ok_or_else(|| "Chưa có engine GoodbyeDPI. Hãy chạy gui\\build.ps1 để tạo bản đóng gói một file.".to_string())
+}
+
+fn write_runtime_file(path: &Path, contents: &[u8], label: &str) -> Result<(), String> {
+    if fs::read(path).map(|existing| existing == contents).unwrap_or(false) {
+        return Ok(());
+    }
+    fs::write(path, contents).map_err(|err| {
+        format!(
+            "Không ghi được {label}: {err}. Hãy thoát các cửa sổ GoodbyeDPI Control/GoodbyeDPI đang chạy rồi thử lại."
+        )
+    })
 }
 
 fn create_tray(sender: Sender<TrayAction>, ctx: Context, lang: Language) -> Option<TrayIcon> {
