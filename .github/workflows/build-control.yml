@@ -1,0 +1,32 @@
+name: Build GoodbyeDPI Control
+
+on:
+  push:
+    paths:
+      - 'gui/**'
+      - '.github/workflows/build-control.yml'
+  pull_request:
+    paths:
+      - 'gui/**'
+      - '.github/workflows/build-control.yml'
+  workflow_dispatch:
+
+jobs:
+  build-control:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build single-file GUI
+        shell: powershell
+        working-directory: gui
+        run: .\build.ps1
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: goodbyedpi-control-windows-x86_64
+          path: gui/target/release/goodbyedpi-control.exe
