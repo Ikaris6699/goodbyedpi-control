@@ -458,7 +458,7 @@ impl App {
                 ("GitHub", "https://github.com/"),
             ];
             let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(3)).timeout_read(Duration::from_secs(3)).timeout_write(Duration::from_secs(3)).build();
-            let results = sites.iter().map(|(name, url)| {
+            let mut results: Vec<(String, bool)> = sites.iter().map(|(name, url)| {
                 let reachable = match agent.get(url).call() { Ok(_) | Err(ureq::Error::Status(_, _)) => true, Err(_) => false };
                 ((*name).to_string(), reachable)
             }).collect();
@@ -485,7 +485,7 @@ impl App {
         self.auto_progress = Some(self.settings.language.text("Chuẩn bị các cấu hình thử…", "Preparing configuration tests…").into());
         std::thread::spawn(move || {
             let candidates = preset_candidates(&base);
-            for (index, candidate) in candidates.into_iter().enumerate() {
+            for (index, mut candidate) in candidates.into_iter().enumerate() {
                 let label = format!("{} {}/8 — {}", base.language.text("Thử cấu hình", "Testing mode"), index + 1, format!("-{} {}", index / 2 + 5, if candidate.auto_ttl { "+ auto TTL" } else { "" }));
                 let _ = tx.send(AutoMessage::Progress(label));
                 let mut cmd = Command::new(&backend);
