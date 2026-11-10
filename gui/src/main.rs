@@ -433,9 +433,11 @@ impl App {
                         Ok(content) => {
                             let mut added = 0;
                             for line in content.lines() {
-                                if let Ok(domain) = normalize_domain(line) && !self.settings.domains.contains(&domain) {
-                                    self.settings.domains.push(domain);
-                                    added += 1;
+                                if let Ok(domain) = normalize_domain(line) {
+                                    if !self.settings.domains.contains(&domain) {
+                                        self.settings.domains.push(domain);
+                                        added += 1;
+                                    }
                                 }
                             }
                             self.settings.domains.sort();
