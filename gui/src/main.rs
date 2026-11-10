@@ -570,7 +570,6 @@ impl EframeApp for App {
                     self.stop();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                _ => {}
             }
         }
 
@@ -712,7 +711,7 @@ fn create_tray(sender: Sender<TrayAction>, ctx: Context, lang: Language) -> Opti
     let _ = menu.append(&quit);
     let menu_sender = sender.clone();
     let menu_ctx = ctx.clone();
-    MenuEvent::set_event_handler(Some(move |event| {
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         let action = match event.id.0.as_str() {
             "show" => Some(TrayAction::Show),
             "start" => Some(TrayAction::Start),
@@ -722,7 +721,7 @@ fn create_tray(sender: Sender<TrayAction>, ctx: Context, lang: Language) -> Opti
         };
         if let Some(action) = action { let _ = menu_sender.send(action); menu_ctx.request_repaint(); }
     }));
-    TrayIconEvent::set_event_handler(Some(move |event| {
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
         if matches!(event, TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }) {
             let _ = sender.send(TrayAction::Show);
             ctx.request_repaint();
