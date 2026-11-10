@@ -28,9 +28,9 @@ if (-not $SkipRuntimeDownload) {
 
 Push-Location $GuiRoot
 try {
-    cargo test
+    cargo test --target-dir (Join-Path $GuiRoot 'target')
     if ($LASTEXITCODE -ne 0) { throw 'Rust unit tests failed.' }
-    cargo build --release
+    cargo build --release --target-dir (Join-Path $GuiRoot 'target')
     if ($LASTEXITCODE -ne 0) { throw 'Rust release build failed.' }
     $artifact = Join-Path $TargetRoot 'goodbyedpi-control.exe'
     if (-not (Test-Path -LiteralPath $artifact)) { throw "Cargo did not produce $artifact" }
