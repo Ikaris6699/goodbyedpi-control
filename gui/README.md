@@ -1,34 +1,27 @@
 # GoodbyeDPI Control
 
-Ứng dụng Windows viết bằng Rust, cung cấp giao diện trực quan cho GoodbyeDPI:
+Ứng dụng Windows viết bằng Rust/egui, đóng gói giao diện và engine gốc vào một file `.exe`.
 
-- Chỉ phân mảnh các domain/URL người dùng thêm vào danh sách.
-- Ba mức độ `Nhẹ`, `Cân bằng`, `Mạnh` và chế độ `Tuỳ chỉnh`.
-- Khởi động/dừng engine trực tiếp từ giao diện.
-- Khởi động cùng Windows và chạy nền trong system tray.
-- Nhập danh sách domain từ file `.txt`.
-- Đóng gói engine, WinDivert DLL và driver vào một file `.exe`.
+## Build
 
-## Build bản một file
-
-Yêu cầu Windows, Rust stable và PowerShell:
+Trên Windows, cài Rust stable, mở PowerShell, vào thư mục `gui` rồi chạy:
 
 ```powershell
-cd gui
 .\build.ps1
 ```
 
-Script lấy asset `.zip` mới nhất từ release chính thức của GoodbyeDPI, đặt ba file runtime vào `assets/runtime/`, sau đó nhúng chúng vào `goodbyedpi-control.exe`. Khi chạy, ứng dụng giải nén runtime vào thư mục tạm riêng rồi khởi động engine với `--blacklist`.
+Script tải GoodbyeDPI bản `0.2.3rc3-2`, đối chiếu SHA256, chỉ lấy runtime `x86_64`, chạy unit test và tạo `target/release/goodbyedpi-control.exe`.
 
-Nếu đã có sẵn ba file runtime, dùng:
+## Tính năng
 
-```powershell
-.\build.ps1 -SkipRuntimeDownload
-```
-
-Đầu ra: `gui/target/release/goodbyedpi-control.exe`.
+- Hồ sơ Steam có sẵn bảy domain, có thể sửa; thêm `www.example.com` sẽ thêm cả domain gốc `example.com`.
+- Tự dò tám cấu hình, thử kết nối HTTPS tới Steam Store và Steam Community.
+- Kiểm tra Steam, một số website phổ biến và khả năng phân giải DNS.
+- Chạy cùng Windows bằng Task Scheduler mức quyền cao; tự bật engine khi mở app.
+- Khay hệ thống: click trái bật/tắt engine, menu chuột phải để mở, bật/tắt hoặc thoát app.
+- Ghi log stdout/stderr, xem log bằng Notepad; Job Object dọn engine khi app đóng.
+- DNS Cloudflare là tuỳ chọn, mặc định tắt. `-q` cũng tắt mặc định vì chặn QUIC/HTTP3 trên toàn máy.
 
 ## Lưu ý
 
-Ứng dụng yêu cầu quyền quản trị viên vì engine gốc sử dụng WinDivert. Chế độ `Mạnh` có thể kém tương thích với một số mạng hoặc thiết bị; nên bắt đầu bằng `Cân bằng`.
-
+GoodbyeDPI cần quyền Administrator để nạp WinDivert. Blacklist lọc theo domain cho mọi ứng dụng Windows, không giới hạn riêng tiến trình Steam. `src/` ở thư mục gốc là mã C upstream; build giao diện chỉ dùng Rust và runtime phát hành đã ghim. Giấy phép Apache-2.0 của repo được giữ nguyên.
