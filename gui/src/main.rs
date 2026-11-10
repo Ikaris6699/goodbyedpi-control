@@ -564,6 +564,21 @@ impl EframeApp for App {
 }
 
 fn configure_theme(ctx: &Context) {
+    // egui's bundled default font does not cover every Vietnamese character.
+    // Use the Windows system font first so the interface renders Vietnamese correctly.
+    let mut fonts = egui::FontDefinitions::default();
+    #[cfg(target_os = "windows")]
+    if let Ok(bytes) = fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
+        fonts.font_data.insert(
+            "segoe_ui".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+        );
+        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+            family.insert(0, "segoe_ui".to_owned());
+        }
+    }
+    ctx.set_fonts(fonts);
+
     let mut visuals = egui::Visuals::dark();
     visuals.window_fill = Color32::from_rgb(15, 23, 42);
     visuals.panel_fill = Color32::from_rgb(10, 17, 31);
