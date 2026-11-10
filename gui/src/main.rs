@@ -254,17 +254,18 @@ impl App {
     }
 
     fn start(&mut self) {
+        let lang = self.settings.language;
         if self.is_running() {
             return;
         }
         self.error = None;
         if self.settings.domains.is_empty() {
-            self.error = Some("Hãy thêm ít nhất một website trước khi khởi động.".into());
+            self.error = Some(lang.text("Hãy thêm ít nhất một website trước khi khởi động.", "Add at least one website before starting.").into());
             self.page = Page::Websites;
             return;
         }
         if let Err(err) = write_blacklist(&self.blacklist_path, &self.settings.domains) {
-            self.error = Some(format!("Không tạo được danh sách domain: {err}"));
+            self.error = Some(format!("{}: {err}", lang.text("Không tạo được danh sách domain", "Could not create the domain list")));
             return;
         }
         self.save();
@@ -291,7 +292,7 @@ impl App {
         match command.spawn() {
             Ok(child) => {
                 self.child = Some(child);
-                self.notify("Đã khởi động phân mảnh cho các website đã chọn.");
+                self.notify(lang.text("Đã khởi động phân mảnh cho các website đã chọn.", "Fragmentation started for the selected websites."));
             }
             Err(err) => self.error = Some(format!("Không thể khởi động engine: {err}")),
         }
@@ -306,17 +307,18 @@ impl App {
     }
 
     fn add_domain(&mut self) {
+        let lang = self.settings.language;
         match normalize_domain(&self.pending_domain) {
             Ok(domain) if !self.settings.domains.iter().any(|item| item == &domain) => {
                 self.settings.domains.push(domain);
                 self.settings.domains.sort();
                 self.pending_domain.clear();
                 self.save();
-                self.notify("Đã thêm website vào danh sách.");
+                self.notify(lang.text("Đã thêm website vào danh sách.", "Website added to the list."));
             }
             Ok(_) => {
                 self.pending_domain.clear();
-                self.error = Some("Website này đã có trong danh sách.".into());
+                self.error = Some(lang.text("Website này đã có trong danh sách.", "This website is already in the list.").into());
             }
             Err(err) => self.error = Some(err),
         }
@@ -424,6 +426,7 @@ impl App {
         let lang = self.settings.language;
         ui.heading(lang.text("Website phân mảnh", "Selected websites"));
         ui.label(RichText::new(lang.text("Thêm domain hoặc URL. Ứng dụng sẽ chuẩn hoá thành hostname và bỏ qua đường dẫn phía sau.", "Add a domain or URL. The app converts it to a hostname and ignores the path.")).color(Color32::from_rgb(148, 163, 184)));
+        ui.label(RichText::new(lang.text("Lọc theo domain áp dụng cho mọi ứng dụng. Engine hiện chưa hỗ trợ giới hạn theo tiến trình như Steam.", "Domain filtering applies to all apps. The engine does not currently support restricting traffic to a process such as Steam.")).small().color(Color32::from_rgb(250, 204, 110)));
         ui.add_space(18.0);
         ui.horizontal(|ui| {
             let response = ui.add_sized([430.0, 34.0], egui::TextEdit::singleline(&mut self.pending_domain).hint_text(lang.text("ví dụ: https://example.com/path", "e.g. https://example.com/path")));
@@ -535,13 +538,18 @@ impl App {
         ui.add_space(14.0);
         section(ui, lang.text("Windows & khay hệ thống", "Windows & system tray"), |ui| {
             if ui.checkbox(&mut self.settings.start_with_windows, lang.text("Khởi động cùng Windows", "Start with Windows")).changed() {
-                match set_startup(self.settings.start_with_windows) {
-                    Ok(()) => { self.save(); self.notify("Đã cập nhật tuỳ chọn khởi động cùng Windows."); }
+                match set_startup(self.settings.start_with_windows, self.settings.minimize_to_tray) {
+                    Ok(()) => { self.save(); self.notify(lang.text("Đã cập nhật tuỳ chọn khởi động cùng Windows.", "Windows startup preference updated.")); }
                     Err(err) => self.error = Some(err),
                 }
             }
             ui.label(RichText::new(lang.text("Ứng dụng sẽ tự mở cùng Windows; cần bật tuỳ chọn thu nhỏ vào khay nếu muốn chạy nền.", "The app starts with Windows. Enable tray mode to keep it running in the background.")).small().color(Color32::from_rgb(148, 163, 184)));
-            if ui.checkbox(&mut self.settings.minimize_to_tray, lang.text("Ưu tiên chạy nền trong khay hệ thống", "Start minimized to the system tray")).changed() { self.save(); }
+            if ui.checkbox(&mut self.settings.minimize_to_tray, lang.text("Ưu tiên chạy nền trong khay hệ thống", "Start minimized to the system tray")).changed() {
+                if self.settings.start_with_windows {
+                    if let Err(err) = set_startup(true, self.settings.minimize_to_tray) { self.error = Some(err); }
+                }
+                self.save();
+            }
         });
     }
 }
@@ -748,13 +756,14 @@ fn tray_icon_image() -> Option<Icon> {
 }
 
 #[cfg(windows)]
-fn set_startup(enabled: bool) -> Result<(), String> {
+fn set_startup(enabled: bool, start_minimized: bool) -> Result<(), String> {
     use winreg::{enums::HKEY_CURRENT_USER, RegKey};
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let (key, _) = hkcu.create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run").map_err(|err| format!("Không truy cập được Windows Registry: {err}"))?;
     if enabled {
         let exe = env::current_exe().map_err(|err| format!("Không lấy được đường dẫn ứng dụng: {err}"))?;
-        key.set_value(APP_NAME, &format!("\"{}\" --minimized", exe.display())).map_err(|err| format!("Không bật được khởi động cùng Windows: {err}"))?;
+        let minimized_arg = if start_minimized { " --minimized" } else { "" };
+        key.set_value(APP_NAME, &format!("\"{}\"{minimized_arg}", exe.display())).map_err(|err| format!("Không bật được khởi động cùng Windows: {err}"))?;
     } else {
         let _ = key.delete_value(APP_NAME);
     }
@@ -762,7 +771,7 @@ fn set_startup(enabled: bool) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn set_startup(_enabled: bool) -> Result<(), String> {
+fn set_startup(_enabled: bool, _start_minimized: bool) -> Result<(), String> {
     Err("Tính năng này chỉ hỗ trợ Windows.".into())
 }
 
