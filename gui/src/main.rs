@@ -480,14 +480,16 @@ impl App {
                 if ui.add(egui::DragValue::new(&mut self.settings.https_fragment).range(1..=64)).changed() { self.settings.intensity = Intensity::Custom; self.save(); }
             });
             ui.add_space(8.0);
+            let mut changed = false;
             for (label, value, help) in [
                 ("Đảo thứ tự mảnh", &mut self.settings.reverse_fragment, "Tăng khả năng vượt DPI nhưng một số thiết bị cũ có thể kém tương thích."),
                 ("SEQ giả", &mut self.settings.wrong_sequence, "Gửi thêm gói TCP có số thứ tự không hợp lệ."),
                 ("Checksum giả", &mut self.settings.wrong_checksum, "Gửi thêm gói có TCP checksum không hợp lệ."),
                 ("Chặn QUIC/HTTP3", &mut self.settings.block_quic, "Buộc trình duyệt quay về TCP/HTTP2 trong một số trường hợp."),
             ] {
-                if ui.checkbox(value, label).on_hover_text(help).changed() { self.settings.intensity = Intensity::Custom; self.save(); }
+                changed |= ui.checkbox(value, label).on_hover_text(help).changed();
             }
+            if changed { self.settings.intensity = Intensity::Custom; self.save(); }
         });
         ui.add_space(14.0);
         section(ui, "Windows & khay hệ thống", |ui| {
@@ -531,9 +533,9 @@ impl EframeApp for App {
             }
         }
 
-        egui::TopBottomPanel::top("header").frame(egui::Frame::none().fill(Color32::from_rgb(15, 23, 42)).inner_margin(egui::Margin::symmetric(22, 18))).show(ctx, |ui| self.render_header(ui));
-        egui::SidePanel::left("sidebar").resizable(false).frame(egui::Frame::none().fill(Color32::from_rgb(15, 23, 42)).inner_margin(egui::Margin::symmetric(18, 20))).show(ctx, |ui| self.render_sidebar(ui));
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::from_rgb(10, 17, 31)).inner_margin(egui::Margin::symmetric(26, 24))).show(ctx, |ui| {
+        egui::TopBottomPanel::top("header").frame(egui::Frame::none().fill(Color32::from_rgb(15, 23, 42)).inner_margin(egui::Margin::symmetric(22.0, 18.0))).show(ctx, |ui| self.render_header(ui));
+        egui::SidePanel::left("sidebar").resizable(false).frame(egui::Frame::none().fill(Color32::from_rgb(15, 23, 42)).inner_margin(egui::Margin::symmetric(18.0, 20.0))).show(ctx, |ui| self.render_sidebar(ui));
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::from_rgb(10, 17, 31)).inner_margin(egui::Margin::symmetric(26.0, 24.0))).show(ctx, |ui| {
             match self.page {
                 Page::Overview => self.render_overview(ui),
                 Page::Websites => self.render_websites(ui),
@@ -578,7 +580,7 @@ fn nav_button(ui: &mut Ui, page: &mut Page, target: Page, label: &str, glyph: &s
 }
 
 fn stat_card(ui: &mut Ui, title: &str, value: String, suffix: &str) {
-    egui::Frame::group(ui.style()).fill(Color32::from_rgb(20, 33, 49)).inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+    egui::Frame::group(ui.style()).fill(Color32::from_rgb(20, 33, 49)).inner_margin(egui::Margin::same(16.0)).show(ui, |ui| {
         ui.set_min_width(170.0);
         ui.label(RichText::new(title).small().color(Color32::from_rgb(148, 163, 184)));
         ui.add_space(3.0);
@@ -588,7 +590,7 @@ fn stat_card(ui: &mut Ui, title: &str, value: String, suffix: &str) {
 }
 
 fn section(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
-    egui::Frame::group(ui.style()).fill(Color32::from_rgb(16, 28, 44)).inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+    egui::Frame::group(ui.style()).fill(Color32::from_rgb(16, 28, 44)).inner_margin(egui::Margin::same(16.0)).show(ui, |ui| {
         ui.label(RichText::new(title).strong().color(Color32::from_rgb(226, 232, 240)));
         ui.add_space(9.0);
         contents(ui);
