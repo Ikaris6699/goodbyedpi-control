@@ -111,13 +111,13 @@ impl Default for Settings {
         Self {
             language: Language::Vietnamese,
             domains: STEAM_DOMAINS.iter().map(|s| (*s).to_string()).collect(),
-            intensity: Intensity::Balanced,
+            intensity: Intensity::Custom,
             http_fragment: 2,
             https_fragment: 2,
-            reverse_fragment: true,
-            wrong_sequence: true,
+            reverse_fragment: false,
+            wrong_sequence: false,
             wrong_checksum: false,
-            block_quic: false,
+            block_quic: true,
             auto_ttl: false,
             use_public_dns: false,
             start_with_windows: false,
@@ -1192,7 +1192,7 @@ mod tests {
     }
 
     #[test]
-    fn steam_profile_is_populated_by_default() { assert!(STEAM_DOMAINS.iter().all(|domain| Settings::default().domains.contains(&domain.to_string()))); }
+    fn steam_profile_is_populated_by_default() { let settings = Settings::default(); assert!(STEAM_DOMAINS.iter().all(|domain| settings.domains.contains(&domain.to_string()))); assert_eq!(settings.intensity, Intensity::Custom); assert_eq!(settings.http_fragment, 2); assert_eq!(settings.https_fragment, 2); assert!(!settings.reverse_fragment); assert!(!settings.wrong_sequence); assert!(!settings.wrong_checksum); assert!(settings.block_quic); assert!(!settings.use_public_dns); }
 
     #[test]
     fn autodetect_tests_eight_preset_combinations() {
