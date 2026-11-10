@@ -6,6 +6,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::mpsc::{self, Receiver, Sender},
     time::{Duration, Instant},
 };
 
@@ -15,7 +16,7 @@ use eframe::{App as EframeApp, CreationContext, Frame, NativeOptions};
 use serde::{Deserialize, Serialize};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
-    Icon, TrayIcon, TrayIconBuilder,
+    Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
 mod embedded_runtime {
@@ -25,6 +26,25 @@ mod embedded_runtime {
 const APP_NAME: &str = "GoodbyeDPI Control";
 const CONFIG_FILE: &str = "settings.json";
 const BLACKLIST_FILE: &str = "domains.txt";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum Language {
+    Vietnamese,
+    English,
+}
+
+impl Default for Language {
+    fn default() -> Self { Self::Vietnamese }
+}
+
+impl Language {
+    fn text(self, vietnamese: &'static str, english: &'static str) -> &'static str {
+        match self { Self::Vietnamese => vietnamese, Self::English => english }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TrayAction { Show, Start, Stop, Quit }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum Intensity {
@@ -41,27 +61,29 @@ impl Default for Intensity {
 }
 
 impl Intensity {
-    fn title(self) -> &'static str {
+    fn title(self, language: Language) -> &'static str {
         match self {
-            Self::Light => "Nhẹ",
-            Self::Balanced => "Cân bằng",
-            Self::Strong => "Mạnh",
-            Self::Custom => "Tuỳ chỉnh",
+            Self::Light => language.text("Nhẹ", "Light"),
+            Self::Balanced => language.text("Cân bằng", "Balanced"),
+            Self::Strong => language.text("Mạnh", "Strong"),
+            Self::Custom => language.text("Tuỳ chỉnh", "Custom"),
         }
     }
 
-    fn description(self) -> &'static str {
+    fn description(self, language: Language) -> &'static str {
         match self {
-            Self::Light => "Chia mảnh cơ bản, ưu tiên tương thích.",
-            Self::Balanced => "Cấu hình khuyến nghị cho hầu hết mạng.",
-            Self::Strong => "Thêm kỹ thuật giả gói, có thể kém tương thích hơn.",
-            Self::Custom => "Tự chọn từng kỹ thuật xử lý.",
+            Self::Light => language.text("Chia mảnh cơ bản, ưu tiên tương thích.", "Basic fragmentation, prioritizes compatibility."),
+            Self::Balanced => language.text("Cấu hình khuyến nghị cho hầu hết mạng.", "Recommended for most networks."),
+            Self::Strong => language.text("Thêm kỹ thuật giả gói, có thể kém tương thích hơn.", "Adds packet tricks; compatibility may be lower."),
+            Self::Custom => language.text("Tự chọn từng kỹ thuật xử lý.", "Choose each packet technique yourself."),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 struct Settings {
+    language: Language,
     domains: Vec<String>,
     intensity: Intensity,
     http_fragment: u16,
@@ -77,6 +99,7 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            language: Language::Vietnamese,
             domains: Vec::new(),
             intensity: Intensity::Balanced,
             http_fragment: 2,
@@ -167,6 +190,7 @@ struct App {
     child: Option<Child>,
     runtime_dir: Option<PathBuf>,
     tray: Option<TrayIcon>,
+    tray_actions: Receiver<TrayAction>,
     show_window_requested: bool,
     start_minimized: bool,
     settings_path: PathBuf,
@@ -184,7 +208,8 @@ impl App {
         let blacklist_path = data_dir.join(BLACKLIST_FILE);
         let settings = load_settings(&settings_path);
         let start_minimized = env::args().any(|arg| arg == "--minimized");
-        let tray = create_tray();
+        let (tray_sender, tray_actions) = mpsc::channel();
+        let tray = create_tray(tray_sender, cc.egui_ctx.clone(), settings.language);
         Self {
             settings,
             page: Page::Overview,
@@ -194,6 +219,7 @@ impl App {
             child: None,
             runtime_dir: None,
             tray,
+            tray_actions,
             show_window_requested: false,
             start_minimized,
             settings_path,
@@ -301,15 +327,16 @@ impl App {
     }
 
     fn render_header(&mut self, ui: &mut Ui) {
+        let lang = self.settings.language;
         ui.horizontal(|ui| {
             ui.label(RichText::new("GOODBYEDPI").strong().size(21.0).color(Color32::from_rgb(123, 224, 164)));
             ui.label(RichText::new("CONTROL").strong().size(21.0).color(Color32::from_rgb(226, 232, 240)));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Ẩn vào khay").clicked() {
+                if ui.button(lang.text("Ẩn vào khay", "Hide to tray")).clicked() {
                     self.hide_window(ui.ctx());
                 }
                 let running = self.is_running();
-                let label = if running { "● Đang chạy" } else { "○ Đang dừng" };
+                let label = if running { lang.text("● Đang chạy", "● Running") } else { lang.text("○ Đang dừng", "○ Stopped") };
                 ui.colored_label(if running { Color32::from_rgb(123, 224, 164) } else { Color32::from_rgb(148, 163, 184) }, label);
             });
         });
@@ -318,43 +345,45 @@ impl App {
     }
 
     fn render_sidebar(&mut self, ui: &mut Ui) {
+        let lang = self.settings.language;
         ui.set_width(210.0);
-        ui.label(RichText::new("BẢNG ĐIỀU KHIỂN").small().color(Color32::from_rgb(148, 163, 184)));
+        ui.label(RichText::new(lang.text("BẢNG ĐIỀU KHIỂN", "CONTROL PANEL")).small().color(Color32::from_rgb(148, 163, 184)));
         ui.add_space(8.0);
-        nav_button(ui, &mut self.page, Page::Overview, "Tổng quan", "⌂");
-        nav_button(ui, &mut self.page, Page::Websites, "Website phân mảnh", "◎");
-        nav_button(ui, &mut self.page, Page::Settings, "Cài đặt", "⚙");
+        nav_button(ui, &mut self.page, Page::Overview, lang.text("Tổng quan", "Overview"), "⌂");
+        nav_button(ui, &mut self.page, Page::Websites, lang.text("Website phân mảnh", "Selected websites"), "◎");
+        nav_button(ui, &mut self.page, Page::Settings, lang.text("Cài đặt", "Settings"), "⚙");
         ui.add_space(18.0);
         ui.separator();
         ui.add_space(12.0);
-        ui.label(RichText::new("MỨC ĐỘ HIỆN TẠI").small().color(Color32::from_rgb(148, 163, 184)));
+        ui.label(RichText::new(lang.text("MỨC ĐỘ HIỆN TẠI", "CURRENT LEVEL")).small().color(Color32::from_rgb(148, 163, 184)));
         ui.add_space(5.0);
-        ui.label(RichText::new(self.settings.intensity.title()).size(17.0).strong().color(Color32::from_rgb(123, 224, 164)));
-        ui.label(RichText::new(self.settings.intensity.description()).small().color(Color32::from_rgb(148, 163, 184)));
+        ui.label(RichText::new(self.settings.intensity.title(lang)).size(17.0).strong().color(Color32::from_rgb(123, 224, 164)));
+        ui.label(RichText::new(self.settings.intensity.description(lang)).small().color(Color32::from_rgb(148, 163, 184)));
         ui.add_space(18.0);
         ui.separator();
         ui.add_space(12.0);
-        ui.label(RichText::new("LƯU Ý").small().color(Color32::from_rgb(148, 163, 184)));
-        ui.label(RichText::new("Ứng dụng cần quyền quản trị viên để nạp WinDivert.").small().color(Color32::from_rgb(203, 213, 225)));
+        ui.label(RichText::new(lang.text("LƯU Ý", "NOTE")).small().color(Color32::from_rgb(148, 163, 184)));
+        ui.label(RichText::new(lang.text("Ứng dụng cần quyền quản trị viên để nạp WinDivert.", "Run as administrator to load WinDivert.")).small().color(Color32::from_rgb(203, 213, 225)));
     }
 
     fn render_overview(&mut self, ui: &mut Ui) {
-        ui.heading("Tổng quan");
-        ui.label(RichText::new("Chỉ phân mảnh những website bạn chọn, với cấu hình rõ ràng và có thể thay đổi bất cứ lúc nào.").color(Color32::from_rgb(148, 163, 184)));
+        let lang = self.settings.language;
+        ui.heading(lang.text("Tổng quan", "Overview"));
+        ui.label(RichText::new(lang.text("Chỉ phân mảnh những website bạn chọn, với cấu hình rõ ràng và có thể thay đổi bất cứ lúc nào.", "Fragment only the websites you select, with settings you can change at any time.")).color(Color32::from_rgb(148, 163, 184)));
         ui.add_space(22.0);
         ui.horizontal(|ui| {
-            stat_card(ui, "WEBSITE", self.settings.domains.len().to_string(), "đã chọn");
-            stat_card(ui, "MỨC ĐỘ", self.settings.intensity.title().to_owned(), "phân mảnh");
-            stat_card(ui, "TRẠNG THÁI", if self.is_running() { "Đang chạy".into() } else { "Đã dừng".into() }, "engine");
+            stat_card(ui, lang.text("WEBSITE", "WEBSITES"), self.settings.domains.len().to_string(), lang.text("đã chọn", "selected"));
+            stat_card(ui, lang.text("MỨC ĐỘ", "LEVEL"), self.settings.intensity.title(lang).to_owned(), lang.text("phân mảnh", "fragmentation"));
+            stat_card(ui, lang.text("TRẠNG THÁI", "STATUS"), if self.is_running() { lang.text("Đang chạy", "Running").into() } else { lang.text("Đã dừng", "Stopped").into() }, "engine");
         });
         ui.add_space(24.0);
-        section(ui, "Khởi động nhanh", |ui| {
-            ui.label("Chọn mức độ phù hợp rồi bấm Khởi động. Danh sách domain sẽ được áp dụng qua --blacklist của GoodbyeDPI.");
+        section(ui, lang.text("Khởi động nhanh", "Quick start"), |ui| {
+            ui.label(lang.text("Chọn mức độ phù hợp rồi bấm Khởi động. Danh sách domain sẽ được áp dụng qua --blacklist của GoodbyeDPI.", "Choose a level and press Start. Selected domains are passed to GoodbyeDPI using --blacklist."));
             ui.add_space(12.0);
             ui.horizontal_wrapped(|ui| {
                 for intensity in [Intensity::Light, Intensity::Balanced, Intensity::Strong] {
                     let selected = self.settings.intensity == intensity;
-                    if ui.selectable_label(selected, intensity.title()).clicked() {
+                    if ui.selectable_label(selected, intensity.title(lang)).clicked() {
                         self.settings.apply_preset(intensity);
                         self.save();
                     }
@@ -363,26 +392,26 @@ impl App {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 let running = self.is_running();
-                let button = if running { ui.button("■  Dừng engine") } else { ui.button("▶  Khởi động") };
+                let button = if running { ui.button(lang.text("■  Dừng engine", "■  Stop engine")) } else { ui.button(lang.text("▶  Khởi động", "▶  Start")) };
                 if button.clicked() {
                     if running { self.stop(); } else { self.start(); }
                 }
-                if ui.button("Mở danh sách website").clicked() {
+                if ui.button(lang.text("Mở danh sách website", "Manage websites")).clicked() {
                     self.page = Page::Websites;
                 }
             });
         });
         ui.add_space(16.0);
-        section(ui, "Cấu hình đang dùng", |ui| {
+        section(ui, lang.text("Cấu hình đang dùng", "Active configuration"), |ui| {
             let mut items = vec![
-                format!("HTTP: chia mảnh mức {}", self.settings.http_fragment),
-                format!("HTTPS: chia mảnh mức {}", self.settings.https_fragment),
-                "Chỉ áp dụng cho blacklist".to_string(),
+                format!("HTTP: {} {}", lang.text("chia mảnh mức", "fragment size"), self.settings.http_fragment),
+                format!("HTTPS: {} {}", lang.text("chia mảnh mức", "fragment size"), self.settings.https_fragment),
+                lang.text("Chỉ áp dụng cho blacklist", "Applied only to the blacklist").to_string(),
             ];
-            if self.settings.reverse_fragment { items.push("Đảo thứ tự mảnh".into()); }
-            if self.settings.wrong_sequence { items.push("SEQ giả".into()); }
-            if self.settings.wrong_checksum { items.push("Checksum giả".into()); }
-            if self.settings.block_quic { items.push("Chặn QUIC/HTTP3".into()); }
+            if self.settings.reverse_fragment { items.push(lang.text("Đảo thứ tự mảnh", "Reverse fragment order").into()); }
+            if self.settings.wrong_sequence { items.push(lang.text("SEQ giả", "Fake SEQ").into()); }
+            if self.settings.wrong_checksum { items.push(lang.text("Checksum giả", "Fake checksum").into()); }
+            if self.settings.block_quic { items.push(lang.text("Chặn QUIC/HTTP3", "Block QUIC/HTTP3").into()); }
             ui.horizontal_wrapped(|ui| {
                 for item in items {
                     ui.label(RichText::new(item).background_color(Color32::from_rgb(30, 48, 60)).color(Color32::from_rgb(191, 219, 254)));
@@ -392,18 +421,19 @@ impl App {
     }
 
     fn render_websites(&mut self, ui: &mut Ui) {
-        ui.heading("Website phân mảnh");
-        ui.label(RichText::new("Thêm domain hoặc URL. Ứng dụng sẽ chuẩn hoá thành hostname và bỏ qua đường dẫn phía sau.").color(Color32::from_rgb(148, 163, 184)));
+        let lang = self.settings.language;
+        ui.heading(lang.text("Website phân mảnh", "Selected websites"));
+        ui.label(RichText::new(lang.text("Thêm domain hoặc URL. Ứng dụng sẽ chuẩn hoá thành hostname và bỏ qua đường dẫn phía sau.", "Add a domain or URL. The app converts it to a hostname and ignores the path.")).color(Color32::from_rgb(148, 163, 184)));
         ui.add_space(18.0);
         ui.horizontal(|ui| {
-            let response = ui.add_sized([430.0, 34.0], egui::TextEdit::singleline(&mut self.pending_domain).hint_text("ví dụ: https://example.com/path"));
+            let response = ui.add_sized([430.0, 34.0], egui::TextEdit::singleline(&mut self.pending_domain).hint_text(lang.text("ví dụ: https://example.com/path", "e.g. https://example.com/path")));
             if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) { self.add_domain(); }
-            if ui.button("＋ Thêm website").clicked() { self.add_domain(); }
+            if ui.button(lang.text("＋ Thêm website", "＋ Add website")).clicked() { self.add_domain(); }
         });
         ui.add_space(16.0);
-        section(ui, &format!("Danh sách đã chọn ({})", self.settings.domains.len()), |ui| {
+        section(ui, &format!("{} ({})", lang.text("Danh sách đã chọn", "Selected list"), self.settings.domains.len()), |ui| {
             if self.settings.domains.is_empty() {
-                ui.label(RichText::new("Chưa có website nào. Hãy thêm domain để bật chế độ phân mảnh có chọn lọc.").color(Color32::from_rgb(148, 163, 184)));
+                ui.label(RichText::new(lang.text("Chưa có website nào. Hãy thêm domain để bật chế độ phân mảnh có chọn lọc.", "No websites yet. Add a domain to enable selective fragmentation.")).color(Color32::from_rgb(148, 163, 184)));
             } else {
                 let mut remove_at = None;
                 ScrollArea::vertical().max_height(310.0).show(ui, |ui| {
@@ -412,7 +442,7 @@ impl App {
                             ui.label(RichText::new("●").color(Color32::from_rgb(123, 224, 164)));
                             ui.label(domain);
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.small_button("Xoá").clicked() { remove_at = Some(index); }
+                                if ui.small_button(lang.text("Xoá", "Remove")).clicked() { remove_at = Some(index); }
                             });
                         });
                         ui.separator();
@@ -421,13 +451,13 @@ impl App {
                 if let Some(index) = remove_at {
                     self.settings.domains.remove(index);
                     self.save();
-                    self.notify("Đã xoá website khỏi danh sách.");
+                    self.notify(lang.text("Đã xoá website khỏi danh sách.", "Website removed from the list."));
                 }
             }
         });
         ui.add_space(16.0);
         ui.horizontal(|ui| {
-            if ui.button("Nhập từ file .txt").clicked() {
+            if ui.button(lang.text("Nhập từ file .txt", "Import from .txt")).clicked() {
                 if let Some(path) = rfd::FileDialog::new().add_filter("Text", &["txt"]).pick_file() {
                     match fs::read_to_string(path) {
                         Ok(content) => {
@@ -442,39 +472,48 @@ impl App {
                             }
                             self.settings.domains.sort();
                             self.save();
-                            self.notify(format!("Đã nhập {added} website."));
+                            self.notify(format!("{} {added} {}", lang.text("Đã nhập", "Imported"), lang.text("website.", "websites.")));
                         }
                         Err(err) => self.error = Some(format!("Không đọc được file: {err}")),
                     }
                 }
             }
-            if ui.button("Xoá toàn bộ").clicked() {
+            if ui.button(lang.text("Xoá toàn bộ", "Clear all")).clicked() {
                 self.settings.domains.clear();
                 self.save();
-                self.notify("Đã xoá toàn bộ danh sách website.");
+                self.notify(lang.text("Đã xoá toàn bộ danh sách website.", "All websites removed."));
             }
         });
     }
 
     fn render_settings(&mut self, ui: &mut Ui) {
-        ui.heading("Cài đặt");
-        ui.label(RichText::new("Điều chỉnh cách ứng dụng khởi động và mức độ xử lý gói tin.").color(Color32::from_rgb(148, 163, 184)));
+        let lang = self.settings.language;
+        let language_before = lang;
+        ui.heading(lang.text("Cài đặt", "Settings"));
+        ui.label(RichText::new(lang.text("Điều chỉnh cách ứng dụng khởi động và mức độ xử lý gói tin.", "Configure startup and packet processing options.")).color(Color32::from_rgb(148, 163, 184)));
+        egui::ComboBox::from_label(lang.text("Ngôn ngữ", "Language"))
+            .selected_text(match lang { Language::Vietnamese => "Tiếng Việt", Language::English => "English" })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.settings.language, Language::Vietnamese, "Tiếng Việt");
+                ui.selectable_value(&mut self.settings.language, Language::English, "English");
+            });
+        if self.settings.language != language_before { self.save(); }
         ui.add_space(18.0);
-        section(ui, "Mức độ phân mảnh", |ui| {
+        section(ui, lang.text("Mức độ phân mảnh", "Fragmentation level"), |ui| {
             ui.horizontal_wrapped(|ui| {
                 for intensity in [Intensity::Light, Intensity::Balanced, Intensity::Strong, Intensity::Custom] {
                     let selected = self.settings.intensity == intensity;
-                    if ui.selectable_label(selected, intensity.title()).clicked() {
+                    if ui.selectable_label(selected, intensity.title(lang)).clicked() {
                         self.settings.apply_preset(intensity);
                         self.save();
                     }
                 }
             });
             ui.add_space(8.0);
-            ui.label(self.settings.intensity.description());
+            ui.label(self.settings.intensity.description(lang));
         });
         ui.add_space(14.0);
-        section(ui, "Kỹ thuật xử lý", |ui| {
+        section(ui, lang.text("Kỹ thuật xử lý", "Processing techniques"), |ui| {
             ui.horizontal(|ui| {
                 ui.label("HTTP");
                 if ui.add(egui::DragValue::new(&mut self.settings.http_fragment).range(1..=32)).changed() { self.settings.intensity = Intensity::Custom; self.save(); }
@@ -484,25 +523,25 @@ impl App {
             ui.add_space(8.0);
             let mut changed = false;
             for (label, value, help) in [
-                ("Đảo thứ tự mảnh", &mut self.settings.reverse_fragment, "Tăng khả năng vượt DPI nhưng một số thiết bị cũ có thể kém tương thích."),
-                ("SEQ giả", &mut self.settings.wrong_sequence, "Gửi thêm gói TCP có số thứ tự không hợp lệ."),
-                ("Checksum giả", &mut self.settings.wrong_checksum, "Gửi thêm gói có TCP checksum không hợp lệ."),
-                ("Chặn QUIC/HTTP3", &mut self.settings.block_quic, "Buộc trình duyệt quay về TCP/HTTP2 trong một số trường hợp."),
+                (lang.text("Đảo thứ tự mảnh", "Reverse fragment order"), &mut self.settings.reverse_fragment, lang.text("Tăng khả năng vượt DPI nhưng một số thiết bị cũ có thể kém tương thích.", "May improve DPI bypass; some older devices may be less compatible.")),
+                (lang.text("SEQ giả", "Fake SEQ"), &mut self.settings.wrong_sequence, lang.text("Gửi thêm gói TCP có số thứ tự không hợp lệ.", "Sends an extra TCP packet with an invalid sequence number.")),
+                (lang.text("Checksum giả", "Fake checksum"), &mut self.settings.wrong_checksum, lang.text("Gửi thêm gói có TCP checksum không hợp lệ.", "Sends an extra packet with an invalid TCP checksum.")),
+                (lang.text("Chặn QUIC/HTTP3", "Block QUIC/HTTP3"), &mut self.settings.block_quic, lang.text("Buộc trình duyệt quay về TCP/HTTP2 trong một số trường hợp.", "May force browsers to fall back to TCP/HTTP2.")),
             ] {
                 changed |= ui.checkbox(value, label).on_hover_text(help).changed();
             }
             if changed { self.settings.intensity = Intensity::Custom; self.save(); }
         });
         ui.add_space(14.0);
-        section(ui, "Windows & khay hệ thống", |ui| {
-            if ui.checkbox(&mut self.settings.start_with_windows, "Khởi động cùng Windows").changed() {
+        section(ui, lang.text("Windows & khay hệ thống", "Windows & system tray"), |ui| {
+            if ui.checkbox(&mut self.settings.start_with_windows, lang.text("Khởi động cùng Windows", "Start with Windows")).changed() {
                 match set_startup(self.settings.start_with_windows) {
                     Ok(()) => { self.save(); self.notify("Đã cập nhật tuỳ chọn khởi động cùng Windows."); }
                     Err(err) => self.error = Some(err),
                 }
             }
-            ui.label(RichText::new("Ứng dụng sẽ tự mở cùng Windows; cần bật tuỳ chọn thu nhỏ vào khay nếu muốn chạy nền.").small().color(Color32::from_rgb(148, 163, 184)));
-            if ui.checkbox(&mut self.settings.minimize_to_tray, "Ưu tiên chạy nền trong khay hệ thống").changed() { self.save(); }
+            ui.label(RichText::new(lang.text("Ứng dụng sẽ tự mở cùng Windows; cần bật tuỳ chọn thu nhỏ vào khay nếu muốn chạy nền.", "The app starts with Windows. Enable tray mode to keep it running in the background.")).small().color(Color32::from_rgb(148, 163, 184)));
+            if ui.checkbox(&mut self.settings.minimize_to_tray, lang.text("Ưu tiên chạy nền trong khay hệ thống", "Start minimized to the system tray")).changed() { self.save(); }
         });
     }
 }
@@ -522,12 +561,12 @@ impl EframeApp for App {
             self.show_window_requested = false;
         }
 
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            match event.id.0.as_str() {
-                "show" => self.show_window_requested = true,
-                "start" => self.start(),
-                "stop" => self.stop(),
-                "quit" => {
+        while let Ok(action) = self.tray_actions.try_recv() {
+            match action {
+                TrayAction::Show => self.show_window_requested = true,
+                TrayAction::Start => self.start(),
+                TrayAction::Stop => self.stop(),
+                TrayAction::Quit => {
                     self.stop();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -571,7 +610,7 @@ fn configure_theme(ctx: &Context) {
     if let Ok(bytes) = fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
         fonts.font_data.insert(
             "segoe_ui".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            egui::FontData::from_owned(bytes),
         );
         if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
             family.insert(0, "segoe_ui".to_owned());
@@ -661,16 +700,34 @@ fn prepare_runtime(runtime_dir: &mut Option<PathBuf>) -> Result<PathBuf, String>
     adjacent.filter(|path| path.is_file()).ok_or_else(|| "Chưa có engine GoodbyeDPI. Hãy chạy gui\\build.ps1 để tạo bản đóng gói một file.".to_string())
 }
 
-fn create_tray() -> Option<TrayIcon> {
+fn create_tray(sender: Sender<TrayAction>, ctx: Context, lang: Language) -> Option<TrayIcon> {
     let menu = Menu::new();
-    let show = MenuItem::with_id("show", "Mở cửa sổ", true, None);
-    let start = MenuItem::with_id("start", "Khởi động", true, None);
-    let stop = MenuItem::with_id("stop", "Dừng", true, None);
-    let quit = MenuItem::with_id("quit", "Thoát", true, None);
+    let show = MenuItem::with_id("show", lang.text("Mở cửa sổ", "Open window"), true, None);
+    let start = MenuItem::with_id("start", lang.text("Khởi động", "Start"), true, None);
+    let stop = MenuItem::with_id("stop", lang.text("Dừng", "Stop"), true, None);
+    let quit = MenuItem::with_id("quit", lang.text("Thoát", "Quit"), true, None);
     let _ = menu.append(&show);
     let _ = menu.append(&start);
     let _ = menu.append(&stop);
     let _ = menu.append(&quit);
+    let menu_sender = sender.clone();
+    let menu_ctx = ctx.clone();
+    MenuEvent::set_event_handler(Some(move |event| {
+        let action = match event.id.0.as_str() {
+            "show" => Some(TrayAction::Show),
+            "start" => Some(TrayAction::Start),
+            "stop" => Some(TrayAction::Stop),
+            "quit" => Some(TrayAction::Quit),
+            _ => None,
+        };
+        if let Some(action) = action { let _ = menu_sender.send(action); menu_ctx.request_repaint(); }
+    }));
+    TrayIconEvent::set_event_handler(Some(move |event| {
+        if matches!(event, TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }) {
+            let _ = sender.send(TrayAction::Show);
+            ctx.request_repaint();
+        }
+    }));
     let icon = tray_icon_image()?;
     TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip(APP_NAME).with_icon(icon).build().ok()
 }
